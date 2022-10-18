@@ -7,6 +7,8 @@ class Router:
     relations = {}
     sockets = {}
     ports = {}
+    routing_table = {}
+    stored_msg = {}
 
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
@@ -38,9 +40,12 @@ class Router:
                     if self.sockets[sock] == conn:
                         srcif = sock
                         break
-                msg = k.decode('utf-8')
-
+                msg = k.decode('utf-8') # this is where neighbor's message is stored. You can see it with json.dump(msg)
+                
                 print("Received message '%s' from %s" % (msg, srcif))
+                
+                # code here
+                
         return
 
 if __name__ == "__main__":
