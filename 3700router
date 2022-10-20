@@ -2,14 +2,24 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
+saved_msg = {}
+no_route = {
+	"src": "",
+        "dst": "",
+        "type": "no route",
+        "msg": {}}
+
 class Router:
 
     relations = {}
     sockets = {}
     ports = {}
-    routing_table = {}
-    stored_msg = {}
-
+    routing_table = {"src": "",
+                     "dst": "",
+                     "type": "table",
+                     "msg": []}
+    
+   
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
         self.asn = asn
@@ -29,28 +39,44 @@ class Router:
 
     def send(self, network, message):
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
+		
 
     def run(self):
         while True:
+            print("wwwwwwwwwwwwwwwwwwwwww")
             socks = select.select(self.sockets.values(), [], [], 0.1)[0]
-            for conn in socks:
+            for conn in socks: 
                 k, addr = conn.recvfrom(65535)
                 srcif = None
                 for sock in self.sockets:
                     if self.sockets[sock] == conn:
                         srcif = sock
                         break
-                msg = k.decode('utf-8') # this is where neighbor's message is stored. You can see it with json.dump(msg)
-                
+                msg = k.decode('utf-8')
                 print("Received message '%s' from %s" % (msg, srcif))
-                
-                # code here
+                 # code here
+
                 inmsg = json.loads(msg)
                 # if this is an update type message
-                if inmsg["msg"]["type"] == "update": # this will fail, was trying to find the exact part
-                    # send info back appropriate with msg type update
-                    self.send("192.168.0.2", inmsg[msg])
-                
+                if inmsg["type"] == "update": 
+                    #saved_msg.append(msg)
+                    # routing_table[msg].append({"network": ,
+                    #                            "netmask":,
+                    #                            "peer":
+                    #                            "localpref": "pref",
+                    #                            "ASPath":,
+                    #                            "selfOrigin":,
+                    #                            "origin":})
+                    self.send("192.168.0.2", json.dumps(inmsg))
+                    
+                if inmsg["type"] == "withdraw":
+                    print("foo")
+                if inmsg["type"] == "data":
+                    print("foo")
+                if inmsg["type"] == "dump":
+                    print("foo")
+                    #routing_table["dst"] = 
+                    #self.send("", json.dumps(routing_table))
         return
 
 if __name__ == "__main__":
