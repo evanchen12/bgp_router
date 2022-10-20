@@ -45,6 +45,11 @@ class Router:
                 print("Received message '%s' from %s" % (msg, srcif))
                 
                 # code here
+                inmsg = json.loads(msg)
+                # if this is an update type message
+                if inmsg["msg"]["type"] == "update": # this will fail, was trying to find the exact part
+                    # send info back appropriate with msg type update
+                    self.send("192.168.0.2", inmsg[msg])
                 
         return
 
