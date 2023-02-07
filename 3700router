@@ -43,7 +43,6 @@ class Router:
 
     def run(self):
         while True:
-            print("wwwwwwwwwwwwwwwwwwwwww")
             socks = select.select(self.sockets.values(), [], [], 0.1)[0]
             for conn in socks: 
                 k, addr = conn.recvfrom(65535)
