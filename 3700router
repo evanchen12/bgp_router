@@ -2,86 +2,158 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
-saved_msg = {}
-no_route = {
-	"src": "",
-        "dst": "",
-        "type": "no route",
-        "msg": {}}
+saved_msg = []
+NO_ROUTE = {"src": "", "dst": "", "type": "no route", "msg": {}}
+
 
 class Router:
 
-    relations = {}
-    sockets = {}
-    ports = {}
-    routing_table = {"src": "",
-                     "dst": "",
-                     "type": "table",
-                     "msg": []}
-    
-   
-    def __init__(self, asn, connections):
-        print("Router at AS %s starting up" % asn)
-        self.asn = asn
-        for relationship in connections:
-            port, neighbor, relation = relationship.split("-")
+	relations = {}
+	sockets = {}
+	ports = {}
+	# array with routing table entries (list of dictionaries)
+	routing_table = []
 
-            self.sockets[neighbor] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sockets[neighbor].bind(('localhost', 0))
-            self.ports[neighbor] = int(port)
-            self.relations[neighbor] = relation
-            self.send(neighbor, json.dumps({ "type": "handshake", "src": self.our_addr(neighbor), "dst": neighbor, "msg": {}  }))
+	def __init__(self, asn, connections):
+		print("Router at AS %s starting up" % asn)
+		self.asn = asn
+		for relationship in connections:
+			port, neighbor, relation = relationship.split("-")
 
-    def our_addr(self, dst):
-        quads = list(int(qdn) for qdn in dst.split('.'))
-        quads[3] = 1
-        return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
+			self.sockets[neighbor] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			self.sockets[neighbor].bind(('localhost', 0))
+			self.ports[neighbor] = int(port)
+			self.relations[neighbor] = relation
+			self.send(
+			 neighbor,
+			 json.dumps({
+			  "type": "handshake",
+			  "src": self.our_addr(neighbor),
+			  "dst": neighbor,
+			  "msg": {}
+			 }))
 
-    def send(self, network, message):
-        self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
-		
+	def our_addr(self, dst):
+		quads = list(int(qdn) for qdn in dst.split('.'))
+		quads[3] = 1
+		return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
 
-    def run(self):
-        while True:
-            socks = select.select(self.sockets.values(), [], [], 0.1)[0]
-            for conn in socks: 
-                k, addr = conn.recvfrom(65535)
-                srcif = None
-                for sock in self.sockets:
-                    if self.sockets[sock] == conn:
-                        srcif = sock
-                        break
-                msg = k.decode('utf-8')
-                print("Received message '%s' from %s" % (msg, srcif))
-                 # code here
+	def send(self, network, message):
+		self.sockets[network].sendto(message.encode('utf-8'),
+		                             ('localhost', self.ports[network]))
 
-                inmsg = json.loads(msg)
-                # if this is an update type message
-                if inmsg["type"] == "update": 
-                    #saved_msg.append(msg)
-                    # routing_table[msg].append({"network": ,
-                    #                            "netmask":,
-                    #                            "peer":
-                    #                            "localpref": "pref",
-                    #                            "ASPath":,
-                    #                            "selfOrigin":,
-                    #                            "origin":})
-                    self.send("192.168.0.2", json.dumps(inmsg))
-                    
-                if inmsg["type"] == "withdraw":
-                    print("foo")
-                if inmsg["type"] == "data":
-                    print("foo")
-                if inmsg["type"] == "dump":
-                    print("foo")
-                    #routing_table["dst"] = 
-                    #self.send("", json.dumps(routing_table))
-        return
+	def run(self):
+		while True:
+			socks = select.select(self.sockets.values(), [], [], 0.1)[0]
+			for conn in socks:
+				k, addr = conn.recvfrom(65535)
+				srcif = None
+				for sock in self.sockets:
+					if self.sockets[sock] == conn:
+						srcif = sock
+						break
+				msg = k.decode('utf-8')
+				print("Received message '%s' from %s" % (msg, srcif))
+				# code here
+
+				inmsg = json.loads(msg)
+				# if this is an update type message
+				if inmsg["type"] == "update":
+					saved_msg.append(inmsg)
+					# get msg from the update message
+					update_msg = inmsg["msg"]
+					# add current AS to ASPath
+					ASPath = [args.asn] + update_msg["ASPath"]
+					# append new routing table entry
+					self.routing_table.append({
+					 "network": update_msg["network"],
+					 "netmask": update_msg["netmask"],
+					 "peer": inmsg["src"],
+					 "localpref": update_msg["localpref"],
+					 "selfOrigin": update_msg["selfOrigin"],
+					 "ASPath": update_msg["ASPath"],
+					 "origin": update_msg["origin"]
+					})
+          # If customer send to remaining neighbor, else send to remaining customers
+					for neighbor in self.relations.keys():
+						if neighbor != inmsg["src"] and (self.relations[neighbor] == "cust" or
+						                                 self.relations[inmsg["src"]] == "cust"):
+							self.send(
+							 neighbor,
+							 json.dumps({
+							  "type": "update",
+							  "src": self.our_addr(neighbor),
+							  "dst": neighbor,
+							  "msg": {
+							   "network": update_msg["network"],
+							   "netmask": update_msg["netmask"],
+							   "ASPath": ASPath
+							  }
+							 }))
+
+				if inmsg["type"] == "withdraw":
+					print("foo")
+
+				if inmsg["type"] == "data":
+					# a string of 0s and 1s representing the dst ip address
+					dst_ip_str = ""
+					# converts dst ip from a string with separating '.'s to a single string in binary
+					for qdn in inmsg["dst"].split('.'):
+						dst_ip_str += str(bin(int(qdn)))
+
+## dst_ip = list(str(bin(int(qdn))) for qdn in dst.split('.'))
+## dst_ip = join(dst_ip)
+					matching_entries = []
+					table_index = 0
+					for entry in self.routing_table:
+						## ip = list(str(bin(int(qdn))) for qdn in               entry["network"].split('.'))
+						## ip = join(ip)
+						## prefix = list(str(bin(int(qdn))) for qdn in               entry["netmask"].split('.'))
+						## prefix = join(prefix).count('1')
+						# same as dst_ip_str but for the ip in the table
+						table_ip = ""
+						for qdn in entry["network"].split('.'):
+							table_ip += str(bin(int(qdn)))
+						netmask_list = list(int(qdn) for qdn in entry["netmask"].split('.'))
+						# get how long the prefix is in binary digits
+						prefix_count = 0
+						for qdn in netmask_list:
+							prefix_count += str(bin(qdn)).count('1')
+						dst_ip_cut = dst_ip_str[:prefix_count]
+						table_ip_cut = table_ip[:prefix_count]
+						# if dst ip matches the table ip, add the table index to matching_entries
+						if dst_ip_cut == table_ip_cut:
+							matching_entries.append(table_index)
+						table_index += 1
+
+					# if only one matching IP, send to that peer
+					if len(matching_entries) == 1:
+						entry = self.routing_table[matching_entries[0]]
+						self.send(
+						 entry["peer"],
+						 json.dumps(inmsg))
+					else:
+						#TODO
+        # Dump routing table if dump message
+				if inmsg["type"] == "dump":
+					rt_json = {
+					 "src": self.our_addr(inmsg["src"]),
+					 "dst": inmsg["src"],
+					 "type": "table",
+					 "msg": self.routing_table
+					}
+					self.send(inmsg["src"], json.dumps(rt_json))
+		return
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='route packets')
-    parser.add_argument('asn', type=int, help="AS number of this router")
-    parser.add_argument('connections', metavar='connections', type=str, nargs='+', help="connections")
-    args = parser.parse_args()
-    router = Router(args.asn, args.connections)
-    router.run()
+	parser = argparse.ArgumentParser(description='route packets')
+	parser.add_argument('asn', type=int, help="AS number of this router")
+	parser.add_argument('connections',
+	                    metavar='connections',
+	                    type=str,
+	                    nargs='+',
+	                    help="connections")
+	args = parser.parse_args()
+	router = Router(args.asn, args.connections)
+	router.run()
+
