@@ -95,32 +95,22 @@ class Router:
 					print("foo")
 
 				if inmsg["type"] == "data":
-					# a string of 0s and 1s representing the dst ip address
-					dst_ip_str = ""
-					# converts dst ip from a string with separating '.'s to a single string in binary
-					for qdn in inmsg["dst"].split('.'):
-						dst_ip_str += str(bin(int(qdn)))
+          # A string binary of the destination ip
+          dst_ip = list(str(bin(int(qdn))) for qdn in dst.split('.'))
+          dst_ip = join(dst_ip)
 
-## dst_ip = list(str(bin(int(qdn))) for qdn in dst.split('.'))
-## dst_ip = join(dst_ip)
 					matching_entries = []
 					table_index = 0
 					for entry in self.routing_table:
-						## ip = list(str(bin(int(qdn))) for qdn in               entry["network"].split('.'))
-						## ip = join(ip)
-						## prefix = list(str(bin(int(qdn))) for qdn in               entry["netmask"].split('.'))
-						## prefix = join(prefix).count('1')
-						# same as dst_ip_str but for the ip in the table
-						table_ip = ""
-						for qdn in entry["network"].split('.'):
-							table_ip += str(bin(int(qdn)))
-						netmask_list = list(int(qdn) for qdn in entry["netmask"].split('.'))
-						# get how long the prefix is in binary digits
-						prefix_count = 0
-						for qdn in netmask_list:
-							prefix_count += str(bin(qdn)).count('1')
-						dst_ip_cut = dst_ip_str[:prefix_count]
-						table_ip_cut = table_ip[:prefix_count]
+            # A string binary of an ip from the routing table
+						ip = list(str(bin(int(qdn))) for qdn in entry["network"].split('.'))
+						ip = join(ip)
+            # Prefix of the netmask which then could be use to compare the destination and current ip
+						prefix = list(str(bin(int(qdn))) for qdn in entry["netmask"].split('.'))
+						prefix = join(prefix).count('1')
+						dst_ip_cut = dst_ip[:prefix]
+						table_ip_cut = ip[:prefix]
+            
 						# if dst ip matches the table ip, add the table index to matching_entries
 						if dst_ip_cut == table_ip_cut:
 							matching_entries.append(table_index)
@@ -156,4 +146,3 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 	router = Router(args.asn, args.connections)
 	router.run()
-
