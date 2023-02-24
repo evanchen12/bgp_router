@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-
 import argparse, socket, time, json, select, struct, sys, math
-
 
 class Router:
 	relations = {}
@@ -9,7 +7,6 @@ class Router:
 	ports = {}
 	# array with routing table entries (list of dictionaries)
 	routing_table = []
-
 	saved_msg = []
 	NO_ROUTE = {"src": "", "dst": "", "type": "no route", "msg": {}}
 
@@ -32,14 +29,24 @@ class Router:
 			  "msg": {}
 			 }))
 
-	# Transform network into masked binary representation. Return the
+  # Transform network into masked binary representation. Return the
 	# binary without the last digit as a string
-	def into_ip(entry):
-		ip = list(str(bin(int(qdn))) for qdn in entry["network"].split('.'))
-		prefix = list(str(bin(int(qdn))) for qdn in entry["netmask"].split('.'))
+	def into_ip(self, network, netmask):
+		ip = list(format(int(qdn), '08b') for qdn in network.split('.'))
+		ip = "".join(ip)
+		
+		prefix = list(str(bin(int(qdn))) for qdn in netmask.split('.'))
 		prefix = "".join(prefix).count('1') - 1
-		return ip[:prefix]
-
+		all_zeroes = ip[prefix:]
+		if len(all_zeroes) > 0:
+			all_zeroes = '0' + all_zeroes[1:]
+		ip = ip[:prefix] + all_zeroes
+		ip_first = str(int(ip[:8], 2))
+		ip_second = str(int(ip[8:16], 2))
+		ip_third = str(int(ip[16:24], 2))
+		ip_fourth = str(int(ip[24:], 2))
+		return ip_first + "." + ip_second + "." + ip_third + "." + ip_fourth
+		
 	def send_data(self, rt_index, src, inmsg):
 		entry = self.routing_table[rt_index]
 		dst = entry["peer"]
@@ -47,7 +54,45 @@ class Router:
 			self.send(dst, json.dumps(inmsg))
 		else:
 			self.send(src, json.dumps(self.NO_ROUTE))
-
+  
+	def aggregate(self):
+    # only need to check if the newest entry is dup
+		for i in range(len(self.routing_table)):
+			if i == len(self.routing_table):
+				break
+			newest = self.routing_table[i]
+			for j in range(i):
+				cur = self.routing_table[j]
+				if self.into_ip(cur["network"], cur["netmask"]) == self.into_ip(newest["network"], newest["netmask"]) and newest["peer"] == cur["peer"] and newest["localpref"] == cur["localpref"] and newest["selfOrigin"] == cur["selfOrigin"] and newest["ASPath"] == cur["ASPath"] and newest["origin"] == cur["origin"]:
+					self.routing_table[j]["netmask"] = self.into_ip(newest["netmask"], newest["netmask"])
+					self.routing_table[j]["network"] = self.into_ip(newest["network"], newest["netmask"])
+					del self.routing_table[i]
+					i += 1
+					break
+        
+	def reconstruct(self):
+		reconstructed_table = []
+		for msg in self.saved_msg:
+			if msg["type"] == "update":
+				update_msg = msg["msg"]
+				reconstructed_table.append({
+					"network": update_msg["network"],
+					"netmask": update_msg["netmask"],
+					"peer": msg["src"],
+					"localpref": update_msg["localpref"],
+					"selfOrigin": update_msg["selfOrigin"],
+					"ASPath": update_msg["ASPath"],
+					"origin": update_msg["origin"]
+				})
+			elif msg["type"] == "withdraw":
+				for dead_entry in msg["msg"]:
+					rt = reconstructed_table
+					reconstructed_table = [
+					 entry for entry in rt
+					 if entry["network"] != dead_entry["network"] or entry["netmask"] !=
+					 dead_entry["netmask"] or entry["peer"] != msg["src"]
+					]
+		return reconstructed_table
 	def our_addr(self, dst):
 		quads = list(int(qdn) for qdn in dst.split('.'))
 		quads[3] = 1
@@ -74,7 +119,7 @@ class Router:
 				inmsg = json.loads(msg)
 				# if this is an update type message
 				if inmsg["type"] == "update":
-					self.saved_msg.append(inmsg["msg"])
+					self.saved_msg.append(inmsg)
 					# get msg from the update message
 					update_msg = inmsg["msg"]
 					# add current AS to ASPath
@@ -89,6 +134,7 @@ class Router:
 					 "ASPath": update_msg["ASPath"],
 					 "origin": update_msg["origin"]
 					})
+					self.aggregate()
 					# If customer send to remaining neighbor, else send to remaining customers
 					for neighbor in self.relations.keys():
 						if neighbor != inmsg["src"] and (self.relations[neighbor] == "cust" or
@@ -105,34 +151,20 @@ class Router:
 							   "ASPath": ASPath
 							  }
 							 }))
-				# # only need to check if the newest entry is dup
-				#     newest = routing_table[len(routing_table) - 1]
-				# cut_newest = newest
-				# cut_newest.pop("network")
-				# cut_newest.pop("netmask")
-				#     for i in range(len(routing_table) - 1):
-				#       cur = routing_table[i]
-				# 	cut_cur = cur
-				# 	cut_cur.pop("network")
-				# 	cut_cur.pop("netmask")
-				#       if into_ip(newest) == into_ip(cur) and cut_newest == cut_cur:
-				#         routing_table[i]["network"] =
-				#         routing_table[i]["netmask"]--
-				#         routing_table = routing_table[0:len(routing_table) - 1]
-				#         break
-				#       i++
-
+                                               
 				if inmsg["type"] == "withdraw":
 					# Save message
-					self.saved_msg.append(inmsg["msg"])
+					self.saved_msg.append(inmsg)
 					# Remove dead entry from the routing table
+					
 					for dead_entry in inmsg["msg"]:
-						rt = self.routing_table
+						rt = self.reconstruct()
 						self.routing_table = [
 						 entry for entry in rt
 						 if entry["network"] != dead_entry["network"] or entry["netmask"] !=
 						 dead_entry["netmask"] or entry["peer"] != inmsg["src"]
 						]
+					# self.aggregate()
 					# If customer send to remaining neighbor, else send to remaining customers
 					for neighbor in self.relations.keys():
 						if neighbor != inmsg["src"] and (self.relations[neighbor] == "cust" or
@@ -151,8 +183,9 @@ class Router:
 					dst_ip = list(str(bin(int(qdn))) for qdn in inmsg["dst"].split('.'))
 					dst_ip = "".join(dst_ip)
 
-					matching_entries = []
+					temp_entries = []
 					table_index = 0
+					matching_prefixes = []
 					for entry in self.routing_table:
 						# A string binary of an ip from the routing table
 						ip = list(str(bin(int(qdn))) for qdn in entry["network"].split('.'))
@@ -165,8 +198,20 @@ class Router:
 
 						# if dst ip matches the table ip, add the table index to matching_entries
 						if dst_ip_cut == table_ip_cut:
-							matching_entries.append(table_index)
+							temp_entries.append(table_index)
+							matching_prefixes.append(prefix)
 						table_index += 1
+
+					longest_prefix = 0
+					for prefix in matching_prefixes:
+						if longest_prefix < prefix:
+							longest_prefix = prefix
+
+					matching_entries = []
+
+					for i in range(0, len(matching_prefixes)):
+						if matching_prefixes[i] == longest_prefix:
+							matching_entries.append(temp_entries[i])
 
 					if self.relations[srcif] != "cust":
 						matching_entries = [entry for entry in matching_entries if self.relations[self.routing_table[entry]["peer"]] == "cust"]
@@ -246,6 +291,7 @@ class Router:
 
 # Dump routing table if dump message
 				if inmsg["type"] == "dump":
+					self.aggregate()
 					rt_json = {
 					 "src": self.our_addr(inmsg["src"]),
 					 "dst": inmsg["src"],
