@@ -2,17 +2,16 @@
 
 import argparse, socket, time, json, select, struct, sys, math
 
-saved_msg = []
-NO_ROUTE = {"src": "", "dst": "", "type": "no route", "msg": {}}
-
 
 class Router:
-
 	relations = {}
 	sockets = {}
 	ports = {}
 	# array with routing table entries (list of dictionaries)
 	routing_table = []
+
+	saved_msg = []
+	NO_ROUTE = {"src": "", "dst": "", "type": "no route", "msg": {}}
 
 	def __init__(self, asn, connections):
 		print("Router at AS %s starting up" % asn)
@@ -32,6 +31,22 @@ class Router:
 			  "dst": neighbor,
 			  "msg": {}
 			 }))
+
+	# Transform network into masked binary representation. Return the
+	# binary without the last digit as a string
+	def into_ip(entry):
+		ip = list(str(bin(int(qdn))) for qdn in entry["network"].split('.'))
+		prefix = list(str(bin(int(qdn))) for qdn in entry["netmask"].split('.'))
+		prefix = "".join(prefix).count('1') - 1
+		return ip[:prefix]
+
+	def send_data(self, rt_index, src, inmsg):
+		entry = self.routing_table[rt_index]
+		dst = entry["peer"]
+		if self.relations[src] == "cust" or self.relations[dst] == "cust":
+			self.send(dst, json.dumps(inmsg))
+		else:
+			self.send(src, json.dumps(self.NO_ROUTE))
 
 	def our_addr(self, dst):
 		quads = list(int(qdn) for qdn in dst.split('.'))
@@ -59,7 +74,7 @@ class Router:
 				inmsg = json.loads(msg)
 				# if this is an update type message
 				if inmsg["type"] == "update":
-					saved_msg.append(inmsg)
+					self.saved_msg.append(inmsg["msg"])
 					# get msg from the update message
 					update_msg = inmsg["msg"]
 					# add current AS to ASPath
@@ -74,7 +89,7 @@ class Router:
 					 "ASPath": update_msg["ASPath"],
 					 "origin": update_msg["origin"]
 					})
-          # If customer send to remaining neighbor, else send to remaining customers
+					# If customer send to remaining neighbor, else send to remaining customers
 					for neighbor in self.relations.keys():
 						if neighbor != inmsg["src"] and (self.relations[neighbor] == "cust" or
 						                                 self.relations[inmsg["src"]] == "cust"):
@@ -90,41 +105,146 @@ class Router:
 							   "ASPath": ASPath
 							  }
 							 }))
+				# # only need to check if the newest entry is dup
+				#     newest = routing_table[len(routing_table) - 1]
+				# cut_newest = newest
+				# cut_newest.pop("network")
+				# cut_newest.pop("netmask")
+				#     for i in range(len(routing_table) - 1):
+				#       cur = routing_table[i]
+				# 	cut_cur = cur
+				# 	cut_cur.pop("network")
+				# 	cut_cur.pop("netmask")
+				#       if into_ip(newest) == into_ip(cur) and cut_newest == cut_cur:
+				#         routing_table[i]["network"] =
+				#         routing_table[i]["netmask"]--
+				#         routing_table = routing_table[0:len(routing_table) - 1]
+				#         break
+				#       i++
 
 				if inmsg["type"] == "withdraw":
-					print("foo")
+					# Save message
+					self.saved_msg.append(inmsg["msg"])
+					# Remove dead entry from the routing table
+					for dead_entry in inmsg["msg"]:
+						rt = self.routing_table
+						self.routing_table = [
+						 entry for entry in rt
+						 if entry["network"] != dead_entry["network"] or entry["netmask"] !=
+						 dead_entry["netmask"] or entry["peer"] != inmsg["src"]
+						]
+					# If customer send to remaining neighbor, else send to remaining customers
+					for neighbor in self.relations.keys():
+						if neighbor != inmsg["src"] and (self.relations[neighbor] == "cust" or
+						                                 self.relations[inmsg["src"]] == "cust"):
+							self.send(
+							 neighbor,
+							 json.dumps({
+							  "type": "withdraw",
+							  "src": self.our_addr(neighbor),
+							  "dst": neighbor,
+							  "msg": inmsg["msg"]
+							 }))
 
 				if inmsg["type"] == "data":
-          # A string binary of the destination ip
-          dst_ip = list(str(bin(int(qdn))) for qdn in dst.split('.'))
-          dst_ip = join(dst_ip)
+					# A string binary of the destination ip
+					dst_ip = list(str(bin(int(qdn))) for qdn in inmsg["dst"].split('.'))
+					dst_ip = "".join(dst_ip)
 
 					matching_entries = []
 					table_index = 0
 					for entry in self.routing_table:
-            # A string binary of an ip from the routing table
+						# A string binary of an ip from the routing table
 						ip = list(str(bin(int(qdn))) for qdn in entry["network"].split('.'))
-						ip = join(ip)
-            # Prefix of the netmask which then could be use to compare the destination and current ip
+						ip = "".join(ip)
+						# Prefix of the netmask which then could be use to compare the destination and current ip
 						prefix = list(str(bin(int(qdn))) for qdn in entry["netmask"].split('.'))
-						prefix = join(prefix).count('1')
+						prefix = "".join(prefix).count('1')
 						dst_ip_cut = dst_ip[:prefix]
 						table_ip_cut = ip[:prefix]
-            
+
 						# if dst ip matches the table ip, add the table index to matching_entries
 						if dst_ip_cut == table_ip_cut:
 							matching_entries.append(table_index)
 						table_index += 1
 
-					# if only one matching IP, send to that peer
+					if self.relations[srcif] != "cust":
+						matching_entries = [entry for entry in matching_entries if self.relations[self.routing_table[entry]["peer"]] == "cust"]
+					if len(matching_entries) == 0:
+						self.send(srcif, json.dumps(self.NO_ROUTE))
 					if len(matching_entries) == 1:
-						entry = self.routing_table[matching_entries[0]]
-						self.send(
-						 entry["peer"],
-						 json.dumps(inmsg))
+						self.send_data(matching_entries[0], srcif, inmsg)
+					# else check first step - highest localpref
 					else:
-						#TODO
-        # Dump routing table if dump message
+						highest_localpref = -1
+						for entry in matching_entries:
+							rt_entry = self.routing_table[entry]
+							if highest_localpref < rt_entry["localpref"]:
+								highest_localpref = rt_entry["localpref"]
+						matching_entries = [
+						 entry for entry in matching_entries
+						 if self.routing_table[entry]["localpref"] == highest_localpref
+						]
+						if len(matching_entries) == 1:
+							self.send_data(matching_entries[0], srcif, inmsg)
+						# else check second step - true selforigin
+						else:
+							matching_entries = [
+							 entry for entry in matching_entries
+							 if self.routing_table[entry]["selfOrigin"]
+							]
+							if len(matching_entries) == 1:
+								self.send_data(matching_entries[0], srcif, inmsg)
+							# else check third step - shortest ASPath
+							else:
+								shortest_ASPath = 10000000
+								for entry in matching_entries:
+									rt_entry = self.routing_table[entry]
+									if shortest_ASPath > len(rt_entry["ASPath"]):
+										shortest_ASPath > len(rt_entry["ASPath"])
+								matching_entries = [
+								 entry for entry in matching_entries
+								 if len(self.routing_table[entry]["ASPath"]) == shortest_ASPath
+								]
+								if len(matching_entries) == 1:
+									self.send_data(matching_entries[0], srcif, inmsg)
+								# else check fourth step - origin - check if not UNK first
+								else:
+									temp_entries = [
+									 entry for entry in matching_entries
+									 if self.routing_table[entry]["origin"] != "UNK"
+									]
+									if len(temp_entries) != 0:
+										matching_entries = temp_entries
+									if len(matching_entries) == 1:
+										self.send_data(matching_entries[0], srcif, inmsg)
+									# else check fourth step - origin - check if not EGP now
+									else:
+										temp_entries = [
+										 entry for entry in matching_entries
+										 if self.routing_table[entry]["origin"] != "UNK"
+										 and self.routing_table[entry]["origin"] != "EGP"
+										]
+										if len(temp_entries) != 0:
+											matching_entries = temp_entries
+										if len(matching_entries) == 1:
+											self.send_data(matching_entries[0], srcif, inmsg)
+										#else check fifth step - lowest ip address
+										else:
+											lowest_ip = math.inf
+											lowest_entry = -1
+											for entry in matching_entries:
+												rt_src = self.routing_table[entry]["peer"]
+												cur_ip = list(str(bin(int(qdn))) for qdn in rt_src.split('.'))
+												cur_ip = float("".join(cur_ip))
+												if lowest_ip > cur_ip:
+													lowest_ip = cur_ip
+													lowest_entry = entry
+
+											entry = self.routing_table[lowest_entry]
+											self.send_data(lowest_entry, srcif, inmsg)
+
+# Dump routing table if dump message
 				if inmsg["type"] == "dump":
 					rt_json = {
 					 "src": self.our_addr(inmsg["src"]),
@@ -133,6 +253,7 @@ class Router:
 					 "msg": self.routing_table
 					}
 					self.send(inmsg["src"], json.dumps(rt_json))
+
 		return
 
 if __name__ == "__main__":
